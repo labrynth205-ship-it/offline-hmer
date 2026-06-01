@@ -1,5 +1,6 @@
-torch>=2.0.0
-torchvision>=0.15.0
+torch==2.5.1+cu118
+torchvision==0.20.1+cu118
+--index-url https://download.pytorch.org/whl/cu118
 torchmetrics>=0.11.0
 einops>=0.6.0
 editdistance>=0.6.0
@@ -11,3 +12,4 @@ pandas>=1.5.0
 numpy>=1.23.0
 matplotlib>=3.6.0
 scipy>=1.10.0
+gradio>=5.0.0

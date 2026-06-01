@@ -1,6 +1,6 @@
 import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-os.environ['MPLBACKEND'] = 'Agg'  # Fix matplotlib threading issues
+os.environ['MPLBACKEND'] = 'Agg'
 
 import torch
 from PIL import Image
@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import json
 
 # ===== WAP imports =====
 from models.wap.wap import WAP
@@ -21,44 +22,33 @@ from models.wap.wap_dataloader import Vocabulary as WAPVocab
 torch.serialization.add_safe_globals([WAPVocab])
 from models.wap.wap_eval import recognize_single_image as recognize_single_image_wap, load_checkpoint as load_checkpoint_wap
 
-# ===== BTTR imports =====
-import sys
-sys.path.insert(0, 'models/bttr')
-from bttr import BTTR
-from vocab import CROHMEVocab
-from beam_search import beam_search_batch
-
 # ===== CAN imports =====
+import sys
 sys.path.insert(0, 'models/can')
 from can import CAN, create_can_model
 from can_dataloader import Vocabulary as CANVocab, INPUT_HEIGHT, INPUT_WIDTH
-
 torch.serialization.add_safe_globals([CANVocab])
+
+# ===== CoMER imports =====
+from models.comer.model import CoMER, build_model
+from models.comer.config import Config
 
 # ===== Global variables =====
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
+# Optimize CUDA for faster inference
+if device.type == 'cuda':
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+    torch.cuda.empty_cache()
+    print(f'GPU: {torch.cuda.get_device_name(0)}')
+    print(f'CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB')
+
 # ===== Load WAP model =====
 wap_checkpoint_path = 'final_trained_models/wap_best.pth'
 wap_model, wap_vocab = load_checkpoint_wap(wap_checkpoint_path, device)
 print("WAP model loaded successfully!")
-
-# ===== Load BTTR model =====
-bttr_checkpoint_path = 'final_trained_models/bttr_best.pth'
-bttr_model = BTTR(
-    d_model=256,
-    growth_rate=16,
-    num_layers=3,
-    nhead=8,
-    num_decoder_layers=3,
-    dim_feedforward=1024,
-    dropout=0.1
-).to(device)
-bttr_model.load_state_dict(torch.load(bttr_checkpoint_path, map_location=device, weights_only=True))
-bttr_model.eval()
-bttr_vocab = CROHMEVocab()
-print("BTTR model loaded successfully!")
 
 # ===== Load CAN model =====
 can_checkpoint_path = 'final_trained_models/p_densenet_can_best.pth'
@@ -95,10 +85,30 @@ can_model.load_state_dict(can_checkpoint['model'])
 can_model.eval()
 print("CAN model loaded successfully!")
 
+# ===== Load CoMER model =====
+comer_config = Config()
+with open('models/comer/vocab.json') as f:
+    comer_vocab_data = json.load(f)
+comer_token2idx = comer_vocab_data['token2idx']
+comer_idx2token = {int(k): v for k, v in comer_vocab_data['idx2token'].items()}
+comer_vocab_size = len(comer_token2idx)
+comer_pad_idx = comer_token2idx['<PAD>']
+comer_sos_idx = comer_token2idx['<SOS>']
+comer_eos_idx = comer_token2idx['<EOS>']
+
+comer_model = build_model(comer_config, comer_vocab_size).to(device)
+comer_checkpoint = torch.load('final_trained_models/comer_best.pt', map_location=device, weights_only=True)
+comer_model.load_state_dict(comer_checkpoint)
+comer_model.eval()
+print("CoMER model loaded successfully!")
+
 
 # ===== WAP functions =====
 def recognize_single_image_wrapper_wap(model, image, vocab, device, max_length=150, visualize_attention=False):
-    temp_img_path = 'temp_input_image.png'
+    """Recognize a single image using WAP model.
+    Saves to a temp file with unique name to avoid race conditions, then uses the original pipeline."""
+    import uuid
+    temp_img_path = f'temp_input_image_{uuid.uuid4().hex}.png'
     image.save(temp_img_path)
     try:
         output = recognize_single_image_wap(model, temp_img_path, vocab, device, max_length, visualize_attention)
@@ -124,84 +134,141 @@ def recognize_and_display_wap(model, vocab, device, image):
     return latex_string, rendered_latex, attention_maps_image
 
 
-# ===== BTTR functions =====
-def recognize_single_image_bttr(model, image, vocab, device, max_length=200, beam_size=5):
-    """Recognize a single image using BTTR model"""
+# ===== CoMER functions =====
+def preprocess_image_for_comer(pil_image):
+    """Preprocess image to match CoMER training format (from MathSnap-AI).
+    
+    Training uses: black background, white foreground, grayscale,
+    variable size within h_hi x w_hi bounds.
+    
+    Returns:
+        img_tensor: [1, 1, H, W] float32 on device
+        mask_tensor: [1, H, W] bool on device (False = valid, True = padding)
+    """
+    # Convert to grayscale numpy
+    img = np.array(pil_image.convert("L"))  # [H, W] uint8
+
+    # Binarize with Otsu
+    _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Detect background from border pixels
+    h, w = binary.shape
+    border = np.concatenate([
+        binary[0, :], binary[-1, :],
+        binary[:, 0], binary[:, -1]
+    ])
+    bg_is_white = np.mean(border) > 128
+
+    # Ensure black background, white foreground (matching CoMER training data)
+    if bg_is_white:
+        binary = 255 - binary
+
+    # Scale to fit within bounds (preserve aspect ratio)
+    h_hi, w_hi = comer_config.data.h_hi, comer_config.data.w_hi
+    scale = min(h_hi / h, w_hi / w, 1.0)
+    if scale < 1.0:
+        new_h = max(1, int(h * scale))
+        new_w = max(1, int(w * scale))
+        binary = cv2.resize(binary, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    h, w = binary.shape
+
+    # To tensor
+    img_tensor = torch.from_numpy(binary).float().unsqueeze(0).unsqueeze(0) / 255.0  # [1,1,H,W]
+    mask_tensor = torch.zeros(1, h, w, dtype=torch.bool)  # no padding
+
+    return img_tensor.to(device), mask_tensor.to(device)
+
+
+def recognize_single_image_comer(model, image, device, max_length=200):
+    """Recognize a single image using CoMER model"""
     if isinstance(image, dict):
         image = image.get("composite")
     if image is None:
         return "Please provide an image.", None, None
     
-    # Convert to PIL grayscale
-    pil_image = Image.fromarray(image).convert('L')
+    # Debug: print image stats
+    print(f"[CoMER] Input image shape: {image.shape}, dtype: {image.dtype}, min: {image.min()}, max: {image.max()}")
     
-    # Invert colors: sketchpad has black bg + white text, BTTR expects white bg + black text
-    pil_image = pil_image.point(lambda x: 255 - x)
+    # Convert numpy array to PIL Image
+    pil_image = Image.fromarray(image)
     
-    # Process image
-    from torchvision.transforms import ToTensor
-    to_tensor = ToTensor()
-    image_tensor = to_tensor(pil_image).unsqueeze(0).to(device)  # [1, 1, H, W]
+    # Preprocess using the correct pipeline from MathSnap-AI
+    img_tensor, mask_tensor = preprocess_image_for_comer(pil_image)
     
-    # Create mask (no padding for single image)
-    h, w = image_tensor.shape[2:]
-    mask = torch.zeros(1, h, w, dtype=torch.bool, device=device)
+    print(f"[CoMER] Tensor shape: {img_tensor.shape}, min={img_tensor.min().item():.4f}, max={img_tensor.max().item():.4f}, mean={img_tensor.mean().item():.4f}")
+    print(f"[CoMER] Mask shape: {mask_tensor.shape}, sum(padding)={mask_tensor.sum().item()}")
     
-    # Beam search
+    # Greedy decode with attention
     model.eval()
     with torch.no_grad():
-        preds, attentions, feat_h, feat_w = beam_search_batch(
-            model, image_tensor, mask, beam_size=beam_size, 
-            max_len=max_length, alpha=1.0, vocab=vocab
+        results, attentions = model.greedy_decode_with_attention(
+            img_tensor, mask_tensor, comer_sos_idx, comer_eos_idx, max_len=max_length
         )
     
-    # Convert indices to tokens
-    pred_indices = preds[0]
-    if torch.is_tensor(pred_indices):
-        pred_indices = pred_indices.tolist()
+    print(f"[CoMER] Raw output indices: {results[0][:20]}...")
     
+    # Convert indices to tokens
     latex_tokens = []
-    for idx in pred_indices:
-        if idx == vocab.EOS_IDX:
+    for idx in results[0]:
+        if idx == comer_eos_idx:
             break
-        if idx != vocab.PAD_IDX and idx != vocab.SOS_IDX:
-            latex_tokens.append(vocab.idx2word[idx])
+        if idx != comer_pad_idx and idx != comer_sos_idx:
+            token = comer_idx2token.get(idx, '')
+            if token:
+                latex_tokens.append(token)
     
     latex = ' '.join(latex_tokens)
     rendered_latex = f"$${latex}$$"
     
+    print(f"[CoMER] Recognized: {latex}")
+    
     # Create attention visualization
-    attention_img = create_bttr_attention_visualization(latex_tokens, attentions)
+    attention_img = create_comer_attention_visualization(image, attentions, latex_tokens)
     
     return latex, rendered_latex, attention_img
 
 
-def create_bttr_attention_visualization(latex_tokens, attentions):
-    """Create attention visualization for BTTR"""
-    if not attentions or len(attentions) == 0:
+def create_comer_attention_visualization(orig_image_np, attentions, latex_tokens, max_cols=4):
+    """Create attention visualization for CoMER"""
+    if attentions is None or len(attentions) == 0 or len(latex_tokens) == 0:
         return None
     
     try:
-        # attentions is a list of lists: [step][layer] -> tensor
-        # Take the last step's attention from the last decoder layer
-        last_step_attentions = attentions[-1]
-        if isinstance(last_step_attentions, list):
-            attn = last_step_attentions[-1]
-            attn = attn[0].mean(dim=0)  # [tgt_len, src_len]
+        if len(orig_image_np.shape) == 3:
+            orig_image = Image.fromarray(orig_image_np)
         else:
-            attn = last_step_attentions[0].mean(dim=0)
+            orig_image = Image.fromarray(orig_image_np).convert('RGB')
         
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.imshow(attn.cpu().numpy(), aspect='auto', cmap='jet')
-        ax.set_title('BTTR Attention Weights')
-        ax.set_xlabel('Source Position')
-        ax.set_ylabel('Target Position')
+        num_tokens = min(len(latex_tokens), attentions.shape[0])
+        num_cols = min(max_cols, num_tokens)
+        num_rows = max(1, int(np.ceil(num_tokens / num_cols)))
+        
+        fig, axes = plt.subplots(num_rows, num_cols, figsize=(num_cols * 3, num_rows * 4))
+        axes = np.array(axes).reshape(-1)
+        
+        for i in range(num_tokens):
+            ax = axes[i]
+            attn = attentions[i].cpu().numpy()  # [h, w]
+            
+            # Resize attention to match original image
+            h_orig, w_orig = orig_image.size[1], orig_image.size[0]
+            attn_resized = cv2.resize(attn, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+            
+            ax.imshow(orig_image)
+            ax.imshow(attn_resized, cmap='jet', alpha=0.4)
+            ax.set_title(latex_tokens[i], fontsize=10)
+            ax.axis('off')
+        
+        for j in range(num_tokens, len(axes)):
+            axes[j].axis('off')
+        
         plt.tight_layout()
-        plt.savefig('attention_maps_bttr.png', bbox_inches='tight', dpi=150)
+        plt.savefig('attention_maps_comer.png', bbox_inches='tight', dpi=150)
         plt.close()
-        return Image.open('attention_maps_bttr.png')
+        return Image.open('attention_maps_comer.png')
     except Exception as e:
-        print(f"Attention visualization error: {e}")
+        print(f"CoMER attention visualization error: {e}")
         return None
 
 
@@ -377,8 +444,8 @@ def process_input(model_choice, input_type, uploaded_image, sketchpad_data):
         # Select model
         if model_choice == "WAP":
             return recognize_and_display_wap(wap_model, wap_vocab, device, image_to_process)
-        elif model_choice == "BTTR":
-            return recognize_single_image_bttr(bttr_model, image_to_process, bttr_vocab, device)
+        elif model_choice == "CoMER":
+            return recognize_single_image_comer(comer_model, image_to_process, device)
         elif model_choice == "CAN":
             return recognize_and_display_can(can_model, can_vocab, device, image_to_process)
         else:
@@ -392,24 +459,17 @@ def process_input(model_choice, input_type, uploaded_image, sketchpad_data):
 # ===== Gradio UI =====
 if __name__ == '__main__':
     with gr.Blocks(title="Offline Handwritten Mathematical Expression Recognition") as demo:
-        gr.Markdown(
-            """
-            # 🧮 Offline Handwritten Mathematical Expression Recognition
-            Upload an image or use the sketchpad to recognize a handwritten mathematical expression.
-            Choose between **WAP**, **BTTR** (Transformer-based), or **CAN** (Counting-Aware Network) model.
-            """
-        )
 
         with gr.Row():
-            model_choice = gr.Dropdown(
-                choices=["WAP", "BTTR", "CAN"],
+            model_choice = gr.Radio(
+                choices=["WAP", "CoMER", "CAN"],
                 label="Select Model",
                 value="WAP",
                 interactive=True
             )
 
         with gr.Row():
-            input_choice = gr.Dropdown(
+            input_choice = gr.Radio(
                 choices=["Upload image", "Use sketchpad"],
                 label="Select Input Type",
                 value="Use sketchpad",
@@ -442,7 +502,7 @@ if __name__ == '__main__':
                 label="Recognized LaTeX", interactive=False)
             markdown_output = gr.Markdown(
                 label="Rendered LaTeX")
-            attention_map_output = gr.Image(type='pil', label="Attention maps")
+            attention_map_output = gr.Image(type='pil', label="")
 
         def update_input_visibility(choice):
             if choice == "Upload image":
@@ -471,4 +531,16 @@ if __name__ == '__main__':
             outputs=[latex_output, markdown_output, attention_map_output]
         )
 
-    demo.launch()
+    demo.launch(
+        theme=gr.themes.Base(
+            primary_hue="gray",
+            neutral_hue="gray",
+        ),
+        css="""
+        /* Hide the "Image" label box on attention map */
+        .gr-image .label-wrap,
+        .gr-image .container-label {
+            display: none !important;
+        }
+        """,
+    )

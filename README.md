@@ -1,9 +1,9 @@
 # Offline Handwritten Mathematical Expression Recognition (HMER)
 
 This project implements three models for offline handwritten mathematical expression recognition:
-- **BTTR** (Backbone Transformer with Transformer decoder)
-- **CAN** (Counting-Aware Network)
-- **WAP** (Watch, Attend and Parse)
+- **WAP** (Watch, Attend and Parse) — CNN + RNN with attention
+- **CoMER** (Coverage-guided Masked Encoder-decoder with Refinement) — DenseNet + Transformer with Attention Refinement Module
+- **CAN** (Counting-Aware Network) — DenseNet + RNN with coverage and counting
 
 ## Dataset
 
@@ -17,122 +17,94 @@ CROHME/
 ```
 
 Each split contains:
-- `img/` - BMP images
-- `caption.txt` - Tab-separated file: `filename\tlabel` (space-separated LaTeX tokens)
+- `img/` — BMP images
+- `caption.txt` — Tab-separated file: `filename\tlabel` (space-separated LaTeX tokens)
 
-## Training on Vast.ai
+## Pretrained Models
 
-### Step 1: Upload to Vast.ai
-
-1. **Zip the project** (excluding large files):
-   ```bash
-   # On your local machine
-   zip -r offline-hmer.zip offline-hmer/ -x "*.git*" "checkpoints/*" "__pycache__/*" "*.pyc" ".ipynb_checkpoints/*"
-   ```
-
-2. **Upload to Vast.ai**:
-   - Rent an instance with GPU (e.g., RTX 3090, RTX 4090, A5000, etc.)
-   - Upload the zip file via the Vast.ai web interface or use `curl`/`wget` from a file hosting service
-   - Unzip: `unzip offline-hmer.zip`
-
-### Step 2: Run Training
-
-```bash
-cd offline-hmer
-
-# Train both BTTR and CAN
-bash setup_and_train.sh
-
-# Or train only one model
-bash setup_and_train.sh bttr
-bash setup_and_train.sh can
-```
-
-The script will:
-1. Install all Python dependencies from `requirements.txt`
-2. Verify the CROHME dataset structure
-3. Create the `checkpoints/` directory
-4. Start training
-
-### Step 3: Monitor Training
-
-Training logs will be printed to the console. Checkpoints are saved in `checkpoints/`:
-- `checkpoints/bttr_best.pth` - Best BTTR model
-- `checkpoints/densenet_can_best.pth` or `checkpoints/p_densenet_can_best.pth` - Best CAN model
-
-## Local Training
-
-```bash
-# BTTR
-cd models/bttr
-python train_bttr.py
-
-# CAN
-cd models/can
-python can_trainer.py
-```
-
-## Evaluation
-
-```bash
-# BTTR evaluation
-cd models/bttr
-python eval_bttr.py
-
-# CAN evaluation
-cd models/can
-python can_eval.py
-
-# WAP evaluation
-cd models/wap
-python wap_eval.py
-```
+| Model | Checkpoint | Status |
+|-------|-----------|--------|
+| WAP | `final_trained_models/wap_best.pth` | ✅ Working |
+| CoMER | `final_trained_models/comer_best.pt` | ⚠️ Loaded but produces poor results |
+| CAN | `final_trained_models/p_densenet_can_best.pth` | ✅ Working |
 
 ## Gradio Demo
 
+Run the combined demo (supports all three models):
+
 ```bash
-# BTTR demo
-python gradio_demo_bttr.py
-
-# CAN demo
 python gradio_demo.py
-
-# WAP demo
-python gradio_demo_wap.py
 ```
 
-## Configuration
+Or run individual model demos:
 
-Edit `config.json` to adjust model hyperparameters, dataset paths, and training settings.
+```bash
+python gradio_demo_comer.py   # CoMER only
+```
+
+### Usage
+
+1. Select model: **WAP**, **CoMER**, or **CAN**
+2. Choose input type: **Upload image** or **Use sketchpad**
+3. Draw or upload a handwritten mathematical expression
+4. Click **Recognize**
+
+### Sketchpad
+
+The sketchpad uses a **black background** with **white brush**. This matches the expected input format for all models.
 
 ## Project Structure
 
 ```
-offline-hmer/
-├── CROHME/                  # Dataset
-│   ├── train/
-│   ├── 2014/
-│   ├── 2016/
-│   └── 2019/
+CV_Project/
 ├── models/
-│   ├── bttr/               # BTTR model
-│   │   ├── train_bttr.py
-│   │   ├── bttr.py
-│   │   ├── dataloader.py
-│   │   ├── vocab.py
-│   │   ├── metrics.py
-│   │   ├── beam_search.py
-│   │   └── dictionary.txt
-│   ├── can/                # CAN model
-│   │   ├── can_trainer.py
+│   ├── comer/               # CoMER model (DenseNet + Transformer + ARM)
+│   │   ├── model.py
+│   │   ├── encoder.py       # DenseNet encoder
+│   │   ├── decoder.py       # Transformer decoder with ARM
+│   │   ├── config.py
+│   │   ├── pos_enc.py       # Positional encoding
+│   │   ├── transformer/     # Transformer modules
+│   │   └── vocab.json
+│   ├── can/                 # CAN model
 │   │   ├── can.py
 │   │   ├── can_dataloader.py
 │   │   └── can_eval.py
-│   └── wap/                # WAP model
+│   └── wap/                 # WAP model
+│       ├── wap.py
+│       ├── wap_dataloader.py
 │       └── wap_eval.py
-├── checkpoints/            # Saved model checkpoints
-├── config.json             # Configuration file
-├── requirements.txt        # Python dependencies
-├── setup_and_train.sh      # Vast.ai setup & training script
+├── final_trained_models/    # Pretrained model checkpoints
+├── dataset/                 # Dataset files
+├── notebooks/               # Jupyter notebooks
+├── codes/                   # Utility scripts
+├── outputs/                 # Evaluation outputs
+├── gradio_demo.py           # Combined Gradio demo (all models)
+├── gradio_demo_comer.py     # CoMER-only Gradio demo
+├── config.json              # Configuration file
+├── requirements.txt         # Python dependencies
 └── README.md
 ```
+
+## Requirements
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Key dependencies:
+- Python 3.10+
+- PyTorch 2.0+
+- Gradio 5+
+- OpenCV
+- PIL
+- Matplotlib
+- Albumentations (for CAN)
+
+## Notes
+
+- The **WAP** and **CAN** models produce the best results with the current pretrained checkpoints.
+- The **CoMER** model checkpoint (`comer_best.pt`) loads correctly but the recognition quality is poor, likely due to insufficient training.
+- All models expect **black background + white foreground** input images.
