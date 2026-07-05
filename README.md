@@ -20,14 +20,6 @@ Each split contains:
 - `img/` — BMP images
 - `caption.txt` — Tab-separated file: `filename\tlabel` (space-separated LaTeX tokens)
 
-## Pretrained Models
-
-| Model | Checkpoint | Status |
-|-------|-----------|--------|
-| WAP | `final_trained_models/wap_best.pth` | ✅ Working |
-| CoMER | `final_trained_models/comer_best.pt` | ⚠️ Loaded but produces poor results |
-| CAN | `final_trained_models/p_densenet_can_best.pth` | ✅ Working |
-
 ## Gradio Demo
 
 Run the combined demo (supports all three models):
@@ -103,8 +95,3 @@ Key dependencies:
 - Matplotlib
 - Albumentations (for CAN)
 
-## Notes
-
-- The **WAP** and **CAN** models produce the best results with the current pretrained checkpoints.
-- The **CoMER** model checkpoint (`comer_best.pt`) loads correctly but the recognition quality is poor, likely due to insufficient training.
-- All models expect **black background + white foreground** input images.

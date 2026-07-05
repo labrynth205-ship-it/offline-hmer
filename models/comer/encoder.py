@@ -14,7 +14,6 @@ from torch import FloatTensor, LongTensor
 from models.comer.pos_enc import ImgPosEnc
 
 
-# DenseNet-B
 class _Bottleneck(nn.Module):
     def __init__(self, n_channels: int, growth_rate: int, use_dropout: bool):
         super(_Bottleneck, self).__init__()
@@ -40,7 +39,6 @@ class _Bottleneck(nn.Module):
         return out
 
 
-# single layer
 class _SingleLayer(nn.Module):
     def __init__(self, n_channels: int, growth_rate: int, use_dropout: bool):
         super(_SingleLayer, self).__init__()
@@ -59,7 +57,6 @@ class _SingleLayer(nn.Module):
         return out
 
 
-# transition layer
 class _Transition(nn.Module):
     def __init__(self, n_channels: int, n_out_channels: int, use_dropout: bool):
         super(_Transition, self).__init__()
@@ -177,14 +174,11 @@ class Encoder(nn.Module):
         Tuple[FloatTensor, LongTensor]
             [b, h, w, d], [b, h, w]
         """
-        # extract feature
         feature, mask = self.model(img, img_mask)
         feature = self.feature_proj(feature)
 
-        # proj
         feature = rearrange(feature, "b d h w -> b h w d")
 
-        # positional encoding
         feature = self.pos_enc_2d(feature, mask)
         feature = self.norm(feature)
 

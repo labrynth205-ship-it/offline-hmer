@@ -170,11 +170,9 @@ def multi_head_attention_forward(
         if (query is key or torch.equal(query, key)) and (
             key is value or torch.equal(key, value)
         ):
-            # self-attention
             q, k, v = F.linear(query, in_proj_weight,
                                in_proj_bias).chunk(3, dim=-1)
         elif key is value or torch.equal(key, value):
-            # encoder-decoder attention
             _b = in_proj_bias
             _start = 0
             _end = embed_dim

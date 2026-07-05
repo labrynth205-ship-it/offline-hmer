@@ -30,23 +30,17 @@ def is_effectively_binary(img, threshold_percentage=0.9):
 
 def before_padding(image):
     
-    # apply Canny edge detector to find text edges
     edges = cv2.Canny(image, 50, 150)
 
-    # apply dilation to connect nearby edges
     kernel = np.ones((7, 13), np.uint8)
     dilated = cv2.dilate(edges, kernel, iterations=8)
 
-    # find connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(dilated, connectivity=8)
     
-    # optimize crop rectangle using F1 score
-    # sort components by number of white pixels (excluding background which is label 0)
     sorted_components = sorted(range(1, num_labels), 
                              key=lambda i: stats[i, cv2.CC_STAT_AREA], 
                              reverse=True)
     
-    # Initialize with empty crop
     best_f1 = 0
     best_crop = (0, 0, image.shape[1], image.shape[0])
     total_white_pixels = np.sum(dilated > 0)
@@ -56,11 +50,9 @@ def before_padding(image):
     x_max, y_max = 0, 0
     
     for component_idx in sorted_components:
-        # add this component to our mask
         component_mask = (labels == component_idx)
         current_mask = np.logical_or(current_mask, component_mask)
         
-        # update bounding box
         comp_y, comp_x = np.where(component_mask)
         if len(comp_x) > 0 and len(comp_y) > 0:
             x_min = min(x_min, np.min(comp_x))
@@ -68,7 +60,6 @@ def before_padding(image):
             x_max = max(x_max, np.max(comp_x))
             y_max = max(y_max, np.max(comp_y))
         
-        # calculate the current crop
         width = x_max - x_min + 1
         height = y_max - y_min + 1
         crop_area = width * height
@@ -78,7 +69,6 @@ def before_padding(image):
         crop_mask[y_min:y_max+1, x_min:x_max+1] = 1
         white_in_crop = np.sum(np.logical_and(dilated > 0, crop_mask > 0))
         
-        # calculate F1 score
         precision = white_in_crop / crop_area
         recall = white_in_crop / total_white_pixels
         f1 = 2 * precision * recall / (precision + recall)
@@ -87,14 +77,10 @@ def before_padding(image):
             best_f1 = f1
             best_crop = (x_min, y_min, x_max, y_max)
     
-    # apply the best crop to the original image
     x_min, y_min, x_max, y_max = best_crop
     cropped_image = image[y_min:y_max+1, x_min:x_max+1]
-    # cropped_image = cv2.add(cropped_image, 10)
-    # cv2.imwrite('debug_process_img.jpg', cropped_image)
 
     
-    # apply Gaussian adaptive thresholding
     if is_effectively_binary(cropped_image):
         _, thresh = cv2.threshold(cropped_image, 127, 255, cv2.THRESH_BINARY)
     else:
@@ -106,21 +92,16 @@ def before_padding(image):
             11, 
             2
         )
-    # cv2.imwrite('debug_process_img.jpg', thresh)
     
-    # ensure background is black
     white = np.sum(thresh == 255)
     black = np.sum(thresh == 0)
     if white > black:
         thresh = 255 - thresh
     
-    # clean up noise using median filter
     denoised = cv2.medianBlur(thresh, 3)
     for _ in range(3):
         denoised = cv2.medianBlur(denoised, 3)
-    # cv2.imwrite('debug_process_img.jpg', denoised)
 
-    # add padding
     result = cv2.copyMakeBorder(
         denoised, 
         5, 
@@ -139,9 +120,6 @@ inp_w = 128 * 8
 
 
 def process_img(filename):
-    """
-    Load, binarize, ensures background is black, resize and apply centered padding
-    """
 
     image = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
 
@@ -154,29 +132,24 @@ def process_img(filename):
         resized_img = cv2.resize(bin_img, (inp_w, inp_h), interpolation=cv2.INTER_AREA)
     else:
         resized_img = cv2.resize(bin_img, (new_w, inp_h), interpolation=cv2.INTER_AREA)
-        padded_img = np.ones((inp_h, inp_w), dtype=np.uint8) * 0  # black background
+        padded_img = np.ones((inp_h, inp_w), dtype=np.uint8) * 0
         x_offset = (inp_w - new_w) // 2
         padded_img[:, x_offset:x_offset + new_w] = resized_img
         resized_img = padded_img
 
-    # debugging only
     resized_img = cv2.cvtColor(resized_img, cv2.COLOR_GRAY2BGR)
-    # cv2.imwrite('debug_process_img.jpg', resized_img)
     return resized_img, best_crop
 
 
 class Vocabulary:
-    '''
-    Vocabulary class for tokenization
-    '''
     def __init__(self):
         self.word2idx = {}
         self.idx2word = {}
         self.idx = 0
-        self.add_word('<pad>')  # padding token
-        self.add_word('<start>')  # start token
-        self.add_word('<end>')  # end token
-        self.add_word('<unk>')  # unknown token
+        self.add_word('<pad>')
+        self.add_word('<start>')
+        self.add_word('<end>')
+        self.add_word('<unk>')
         self.pad_token = self.word2idx['<pad>']
         self.start_token = self.word2idx['<start>']
         self.end_token = self.word2idx['<end>']
@@ -192,9 +165,6 @@ class Vocabulary:
         return len(self.word2idx)
 
     def tokenize(self, latex):
-        '''
-        Tokenize latex string into indices. This assumes the tokens are separated by space.
-        '''
         tokens = []
         for char in latex.split():
             if char in self.word2idx:
@@ -204,7 +174,6 @@ class Vocabulary:
         return tokens
 
     def build_vocab(self, label_file):
-        '''Build vocabulary from label file'''
         df = pd.read_csv(label_file, sep='\t', header=None,
                          names=['filename', 'label'])
         all_labels_text = ' '.join(df['label'].astype(str).tolist())
@@ -214,18 +183,7 @@ class Vocabulary:
 
 
 class HMERDataset(Dataset):
-    '''
-    Dataset for HMER
-    '''
     def __init__(self, data_folder, label_file, vocab, transform=None, max_length=150):
-        '''
-        Initialize the dataset
-        data_folder: folder containing images
-        label_file: tsv file with two rows (filename, label), assuming no header
-        vocab: Vocabulary object for tokenization
-        transform: image transformations
-        max_length: maximum sequence length
-        '''
         self.data_folder = data_folder
         self.max_length = max_length
         self.vocab = vocab
@@ -266,9 +224,6 @@ class HMERDataset(Dataset):
 
 
 class EncoderCNN(nn.Module):
-    """
-    CNN-based encoder for extracting visual features from handwritten math expressions
-    """
     def __init__(self, enc_hidden_size=256):
         super(EncoderCNN, self).__init__()
         resnet = models.resnet18(weights=None)
@@ -277,10 +232,6 @@ class EncoderCNN(nn.Module):
         self.conv_reduce = nn.Conv2d(512, enc_hidden_size, kernel_size=1)
 
     def forward(self, images):
-        """
-        Extract features from input images; then reshape for attention mechanism
-        images: [batch_size, channels, height, width]
-        """
         features = self.resnet(images)
         features = self.conv_reduce(features)
         batch_size = features.size(0)
@@ -292,13 +243,6 @@ class EncoderCNN(nn.Module):
 
 
 class BahdanauAttention(nn.Module):
-    """
-    Bahdanau attention mechanism with coverage
-    encoder_att: projects encoder output to the attention dimension
-    decoder_att: projects decoder hidden state to the attention dimension
-    coverage_att: projects the coverage vector to the attention dimension
-    full_att: computes a scalar attention score from the combined feature
-    """
     def __init__(self, encoder_dim, decoder_dim, attention_dim):
         super(BahdanauAttention, self).__init__()
         self.encoder_att = nn.Linear(encoder_dim, attention_dim)
@@ -307,12 +251,6 @@ class BahdanauAttention(nn.Module):
         self.full_att = nn.Linear(attention_dim, 1)
 
     def forward(self, encoder_out, decoder_hidden, coverage=None):
-        """
-        Calculate context vector for the current time step
-        encoder_out: [batch_size, num_pixels, encoder_dim]
-        decoder_hidden: [batch_size, decoder_dim]
-        coverage: [batch_size, num_pixels, 1]
-        """
         num_pixels = encoder_out.size(1)
         encoder_att = self.encoder_att(encoder_out)
         decoder_att = self.decoder_att(decoder_hidden)
@@ -332,9 +270,6 @@ class BahdanauAttention(nn.Module):
 
 
 class DecoderRNN(nn.Module):
-    """
-    LSTM-based decoder with attention
-    """
     def __init__(self, vocab_size, embed_size, encoder_dim, decoder_dim, attention_dim, dropout=0.5):
         super(DecoderRNN, self).__init__()
         self.vocab_size = vocab_size
@@ -352,22 +287,12 @@ class DecoderRNN(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
 
     def init_hidden_state(self, encoder_out):
-        """
-        Initialize hidden state and cell state for the LSTM
-        encoder_out: [batch_size, num_pixels, encoder_dim]
-        """
         mean_encoder_out = encoder_out.mean(dim=1)
         h = self.init_h(mean_encoder_out)
         c = self.init_c(mean_encoder_out)
         return h, c
 
     def forward(self, encoder_out, encoded_captions, caption_lengths):
-        """
-        Forward pass for training
-        encoder_out: [batch_size, num_pixels, encoder_dim]
-        encoded_captions: [batch_size, max_caption_length]
-        caption_lengths: [batch_size, 1]
-        """
         batch_size = encoder_out.size(0)
         num_pixels = encoder_out.size(1)
         caption_lengths, sort_ind = caption_lengths.squeeze(1).sort(dim=0, descending=True)
@@ -402,11 +327,6 @@ class DecoderRNN(nn.Module):
         return predictions, alphas, coverage_seq, decode_lengths, sort_ind
 
     def generate_caption(self, encoder_out, max_length=150, start_token=1, end_token=2):
-        """
-        Generate captions (LaTeX sequences)
-        note: prediction will not have start_token
-        encoder_out: [1, num_pixels, encoder_dim]
-        """
         batch_size = encoder_out.size(0)
         assert batch_size == 1, "batch prediction is not supported"
         predictions = []
@@ -440,9 +360,6 @@ class DecoderRNN(nn.Module):
 
 
 class WAP(nn.Module):
-    """
-    Watch, Attend and Parse model for handwritten mathematical expression recognition
-    """
     def __init__(self, vocab_size, embed_size=256, encoder_dim=256, decoder_dim=512, attention_dim=256, dropout=0.5):
         super(WAP, self).__init__()
         self.encoder = EncoderCNN(enc_hidden_size=encoder_dim)
@@ -456,12 +373,6 @@ class WAP(nn.Module):
         )
 
     def forward(self, images, encoded_captions, caption_lengths):
-        """
-        Forward pass
-        images: [batch_size, channels, height, width]
-        encoded_captions: [batch_size, max_caption_length]
-        caption_lengths: [batch_size, 1]
-        """
         encoder_out = self.encoder(images)
         predictions, alphas, coverage_seq, decode_lengths, sort_ind = self.decoder(
             encoder_out, encoded_captions, caption_lengths
@@ -469,10 +380,6 @@ class WAP(nn.Module):
         return predictions, alphas, coverage_seq, decode_lengths, sort_ind
 
     def recognize(self, image, max_length=150, start_token=1, end_token=2):
-        """
-        Recognize handwritten mathematical expression and output LaTeX sequence
-        image: [1, channels, height, width]
-        """
         batch_size = image.size(0)
         assert batch_size == 1, "batch prediction is not supported"
         encoder_out = self.encoder(image)
@@ -508,9 +415,6 @@ train_transforms = A.Compose([
 
 
 def train_epoch(model, train_loader, criterion, optimizer, device, grad_clip=5.0, lbd=0.5, print_freq=10):
-    '''
-    Train the model for one epoch
-    '''
     model.train()
     losses = []
 
@@ -547,9 +451,6 @@ def train_epoch(model, train_loader, criterion, optimizer, device, grad_clip=5.0
 
 
 def validate(model, val_loader, criterion, device, lbd=0.5):
-    '''
-    Validate the model
-    '''
     model.eval()
     losses = []
 

@@ -80,7 +80,6 @@ class Decoder(nn.Module):
             self_coverage=self_coverage,
         )
 
-        # Single projection head (CoMER)
         self.proj = nn.Linear(d_model, vocab_size)
 
     def _build_attention_mask(self, length, device):
@@ -109,8 +108,8 @@ class Decoder(nn.Module):
         tgt_mask = self._build_attention_mask(l, tgt.device)
         tgt_pad_mask = tgt == self.pad_idx
 
-        tgt = self.word_embed(tgt)  # [b, l, d]
-        tgt = self.pos_enc(tgt)  # [b, l, d]
+        tgt = self.word_embed(tgt)
+        tgt = self.pos_enc(tgt)
         tgt = self.norm(tgt)
 
         h = src.shape[1]
@@ -133,15 +132,13 @@ class Decoder(nn.Module):
         out = self.proj(out)
 
         if return_attn:
-            # attn shape: [b*n_heads, tgt_len, src_len] -> reshape
             n_heads = self.model.layers[0].multihead_attn.num_heads
             b = src.shape[0]
             tgt_len = l
             src_len = h * w_src
             attn = attn.view(b, n_heads, tgt_len, src_len)
-            # Average over heads
-            attn = attn.mean(dim=1)  # [b, tgt_len, src_len]
-            attn = attn.view(b, tgt_len, h, w_src)  # [b, tgt_len, h, w]
+            attn = attn.mean(dim=1)
+            attn = attn.view(b, tgt_len, h, w_src)
             return out, attn
 
         return out

@@ -1,7 +1,6 @@
 import os
 import sys
 
-# Add the models/can directory to path so imports work from project root
 _CAN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _CAN_DIR not in sys.path:
     sys.path.insert(0, _CAN_DIR)
@@ -25,7 +24,6 @@ torch.serialization.add_safe_globals([Vocabulary])
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
-# Try to load config from project root
 _config_paths = [
     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config.json"),
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json"),
@@ -44,9 +42,8 @@ if cfg is None:
 CAN_CONFIG = cfg["can"]
 
 
-# Global constants here
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-MODE = CAN_CONFIG["mode"]  # 'single' or 'evaluate'
+MODE = CAN_CONFIG["mode"]
 BACKBONE_TYPE = CAN_CONFIG["backbone_type"]
 PRETRAINED_BACKBONE = True if CAN_CONFIG["pretrained_backbone"] == 1 else False
 CHECKPOINT_PATH = f'checkpoints/{BACKBONE_TYPE}_can_best.pth' if PRETRAINED_BACKBONE == False else f'checkpoints/p_{BACKBONE_TYPE}_can_best.pth'
@@ -73,9 +70,9 @@ def levenshtein_distance(lst1, lst2):
                 curr_row[j] = prev_row[j - 1]
             else:
                 curr_row[j] = 1 + min(
-                    curr_row[j - 1],  # insertion
-                    prev_row[j],  # deletion
-                    prev_row[j - 1]  # substitution
+                    curr_row[j - 1],
+                    prev_row[j],
+                    prev_row[j - 1]
                 )
 
         prev_row = curr_row.copy()
@@ -92,7 +89,6 @@ def load_checkpoint(checkpoint_path, device, pretrained_backbone=True, backbone=
 
     vocab = checkpoint.get('vocab')
     if vocab is None:
-        # Try to load vocab from a separate file if not in checkpoint
         vocab_path = os.path.join(os.path.dirname(checkpoint_path),
                                   'hmer_vocab.pth')
         if os.path.exists(vocab_path):
@@ -101,7 +97,6 @@ def load_checkpoint(checkpoint_path, device, pretrained_backbone=True, backbone=
             vocab.word2idx = vocab_data['word2idx']
             vocab.idx2word = vocab_data['idx2word']
             vocab.idx = vocab_data['idx']
-            # Update special tokens
             vocab.pad_token = vocab.word2idx['<pad>']
             vocab.start_token = vocab.word2idx['<start>']
             vocab.end_token = vocab.word2idx['<end>']
@@ -111,7 +106,6 @@ def load_checkpoint(checkpoint_path, device, pretrained_backbone=True, backbone=
                 f"Vocabulary not found in checkpoint and {vocab_path} does not exist"
             )
 
-    # Initialize model with parameters from checkpoint
     hidden_size = checkpoint.get('hidden_size', 256)
     embedding_dim = checkpoint.get('embedding_dim', 256)
     use_coverage = checkpoint.get('use_coverage', True)
@@ -138,43 +132,36 @@ def recognize_single_image(model,
     """
     Recognize handwritten mathematical expression from a single image using the CAN model
     """
-    # Prepare image transform for grayscale images
     transform = A.Compose([
-        A.Normalize(mean=[0.0], std=[1.0]),  # For grayscale        
+        A.Normalize(mean=[0.0], std=[1.0]),
         A.pytorch.ToTensorV2()
     ])
 
-    # Load and transform image
     processed_img, best_crop = process_img(image_path, convert_to_rgb=False)
     orig_image = Image.open(image_path).convert("RGB")
-    # Ensure image has the correct format for albumentations
-    processed_img = np.expand_dims(processed_img, axis=-1)  # [H, W, 1]
+    processed_img = np.expand_dims(processed_img, axis=-1)
     image_tensor = transform(
         image=processed_img)['image'].unsqueeze(0).to(device)
 
     model.eval()
     with torch.no_grad():
-        # Generate LaTeX using beam search
         predictions, attention_weights = model.recognize(
             image_tensor,
             max_length=max_length,
             start_token=vocab.start_token,
             end_token=vocab.end_token,
-            beam_width=5  # Use beam search with width 5
+            beam_width=5
         )
 
-    # Convert indices to LaTeX tokens
     latex_tokens = []
     for idx in predictions:
         if idx == vocab.end_token:
             break
-        if idx != vocab.start_token:  # Skip start token
+        if idx != vocab.start_token:
             latex_tokens.append(vocab.idx2word[idx])
 
-    # Join tokens to get complete LaTeX
     latex = ' '.join(latex_tokens)
 
-    # Visualize attention if requested
     if visualize_attention and attention_weights is not None:
         visualize_attention_maps(orig_image, attention_weights,
                                  latex_tokens, best_crop)
@@ -190,11 +177,10 @@ def visualize_attention_maps(orig_image,
     """
     Visualize attention maps over the image for CAN model
     """
-    # Create PIL image from numpy array
     orig_image = orig_image.crop(best_crop)
     orig_w, orig_h = orig_image.size
     ratio = INPUT_HEIGHT / INPUT_WIDTH
-    
+
     num_tokens = len(latex_tokens)
     num_cols = min(max_cols, num_tokens)
     num_rows = int(np.ceil(num_tokens / num_cols))
@@ -212,20 +198,16 @@ def visualize_attention_maps(orig_image,
         attn_w = int(np.sqrt(attn_len / ratio))
         attn_h = int(np.sqrt(attn_len * ratio))
 
-        # resize to (orig_h, interpolated_w)
         attn = attn.view(1, 1, attn_h, attn_w)
         interp_w = int(orig_h / ratio)
 
         attn = F.interpolate(attn, size=(orig_h, interp_w), mode='bilinear', align_corners=False)
         attn = attn.squeeze().cpu().numpy()
 
-        # fix aspect ratio mismatch
         if interp_w > orig_w:
-            # center crop width
             start = (interp_w - orig_w) // 2
             attn = attn[:, start:start + orig_w]
         elif interp_w < orig_w:
-            # stretch to fit width
             attn = cv2.resize(attn, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
 
         ax.imshow(orig_image)
@@ -256,13 +238,10 @@ def evaluate_model(model,
                      header=None,
                      names=['filename', 'label'])
 
-    # Check image file format
     if os.path.exists(test_folder):
         img_files = os.listdir(test_folder)
         if img_files:
-            # Get the extension of the first file
             extension = os.path.splitext(img_files[0])[1]
-            # Add extension to filenames if not present
             df['filename'] = df['filename'].apply(
                 lambda x: x if os.path.splitext(x)[1] else x + extension)
 
@@ -277,7 +256,7 @@ def evaluate_model(model,
     total = 0
 
     transform = A.Compose([
-        A.Normalize(mean=[0.0], std=[1.0]),  # For grayscale            
+        A.Normalize(mean=[0.0], std=[1.0]),
         A.pytorch.ToTensorV2()
     ])
 
@@ -290,8 +269,7 @@ def evaluate_model(model,
         try:
             processed_img, _ = process_img(file_path, convert_to_rgb=False)
 
-            # Ensure image has the correct format for albumentations
-            processed_img = np.expand_dims(processed_img, axis=-1)  # [H, W, 1]
+            processed_img = np.expand_dims(processed_img, axis=-1)
             image_tensor = transform(
                 image=processed_img)['image'].unsqueeze(0).to(device)
 
@@ -301,15 +279,14 @@ def evaluate_model(model,
                     max_length=max_length,
                     start_token=vocab.start_token,
                     end_token=vocab.end_token,
-                    beam_width=5  # Use beam search
+                    beam_width=5
                 )
 
-            # Convert indices to LaTeX tokens
             pred_latex_tokens = []
             for idx in predictions:
                 if idx == vocab.end_token:
                     break
-                if idx != vocab.start_token:  # Skip start token
+                if idx != vocab.start_token:
                     pred_latex_tokens.append(vocab.idx2word[idx])
 
             pred_latex = ' '.join(pred_latex_tokens)
@@ -329,7 +306,6 @@ def evaluate_model(model,
 
             total += 1
 
-            # Save result
             results[image_path] = {
                 'ground_truth': gt_latex,
                 'prediction': pred_latex,
@@ -338,7 +314,6 @@ def evaluate_model(model,
         except Exception as e:
             print(f"Error processing {image_path}: {e}")
 
-    # Calculate accuracy metrics
     exprate = round(correct / total, 4) if total > 0 else 0
     exprate_leq1 = round((correct + err1) / total, 4) if total > 0 else 0
     exprate_leq2 = round(
@@ -351,7 +326,6 @@ def evaluate_model(model,
     print(f"Edit distance ≤ 2: {exprate_leq2:.4f}")
     print(f"Edit distance ≤ 3: {exprate_leq3:.4f}")
 
-    # Save results to file
     with open('evaluation_results_can.json', 'w', encoding='utf-8') as f:
         json.dump(
             {
@@ -382,15 +356,12 @@ def main(mode):
     backbone = BACKBONE_TYPE
     pretrained_backbone = PRETRAINED_BACKBONE
 
-    # For single mode
     image_path = IMAGE_PATH
     visualize = VISUALIZE
 
-    # For evaluation mode
     test_folder = TEST_FOLDER
     label_file = LABEL_FILE
 
-    # Load model and vocabulary
     model, vocab = load_checkpoint(checkpoint_path, device, pretrained_backbone=pretrained_backbone, backbone=backbone)
 
     if mode == 'single':
@@ -416,8 +387,6 @@ def main(mode):
 
 
 if __name__ == '__main__':
-    # Ensure Vocabulary is safe for serialization
     torch.serialization.add_safe_globals([Vocabulary])
 
-    # Run the main function
     main(MODE)

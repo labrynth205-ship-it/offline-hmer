@@ -16,28 +16,23 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import json
 
-# ===== WAP imports =====
 from models.wap.wap import WAP
 from models.wap.wap_dataloader import Vocabulary as WAPVocab
 torch.serialization.add_safe_globals([WAPVocab])
 from models.wap.wap_eval import recognize_single_image as recognize_single_image_wap, load_checkpoint as load_checkpoint_wap
 
-# ===== CAN imports =====
 import sys
 sys.path.insert(0, 'models/can')
 from can import CAN, create_can_model
 from can_dataloader import Vocabulary as CANVocab, INPUT_HEIGHT, INPUT_WIDTH
 torch.serialization.add_safe_globals([CANVocab])
 
-# ===== CoMER imports =====
 from models.comer.model import CoMER, build_model
 from models.comer.config import Config
 
-# ===== Global variables =====
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
-# Optimize CUDA for faster inference
 if device.type == 'cuda':
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
@@ -45,12 +40,10 @@ if device.type == 'cuda':
     print(f'GPU: {torch.cuda.get_device_name(0)}')
     print(f'CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB')
 
-# ===== Load WAP model =====
 wap_checkpoint_path = 'final_trained_models/wap_best.pth'
 wap_model, wap_vocab = load_checkpoint_wap(wap_checkpoint_path, device)
 print("WAP model loaded successfully!")
 
-# ===== Load CAN model =====
 can_checkpoint_path = 'final_trained_models/p_densenet_can_best.pth'
 can_checkpoint = torch.load(can_checkpoint_path, map_location=device, weights_only=False)
 can_vocab = can_checkpoint.get('vocab')
@@ -85,7 +78,6 @@ can_model.load_state_dict(can_checkpoint['model'])
 can_model.eval()
 print("CAN model loaded successfully!")
 
-# ===== Load CoMER model =====
 comer_config = Config()
 with open('models/comer/vocab.json') as f:
     comer_vocab_data = json.load(f)
@@ -103,10 +95,7 @@ comer_model.eval()
 print("CoMER model loaded successfully!")
 
 
-# ===== WAP functions =====
 def recognize_single_image_wrapper_wap(model, image, vocab, device, max_length=150, visualize_attention=False):
-    """Recognize a single image using WAP model.
-    Saves to a temp file with unique name to avoid race conditions, then uses the original pipeline."""
     import uuid
     temp_img_path = f'temp_input_image_{uuid.uuid4().hex}.png'
     image.save(temp_img_path)
@@ -134,24 +123,11 @@ def recognize_and_display_wap(model, vocab, device, image):
     return latex_string, rendered_latex, attention_maps_image
 
 
-# ===== CoMER functions =====
 def preprocess_image_for_comer(pil_image):
-    """Preprocess image to match CoMER training format (from MathSnap-AI).
-    
-    Training uses: black background, white foreground, grayscale,
-    variable size within h_hi x w_hi bounds.
-    
-    Returns:
-        img_tensor: [1, 1, H, W] float32 on device
-        mask_tensor: [1, H, W] bool on device (False = valid, True = padding)
-    """
-    # Convert to grayscale numpy
-    img = np.array(pil_image.convert("L"))  # [H, W] uint8
+    img = np.array(pil_image.convert("L"))
 
-    # Binarize with Otsu
     _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Detect background from border pixels
     h, w = binary.shape
     border = np.concatenate([
         binary[0, :], binary[-1, :],
@@ -159,11 +135,9 @@ def preprocess_image_for_comer(pil_image):
     ])
     bg_is_white = np.mean(border) > 128
 
-    # Ensure black background, white foreground (matching CoMER training data)
     if bg_is_white:
         binary = 255 - binary
 
-    # Scale to fit within bounds (preserve aspect ratio)
     h_hi, w_hi = comer_config.data.h_hi, comer_config.data.w_hi
     scale = min(h_hi / h, w_hi / w, 1.0)
     if scale < 1.0:
@@ -173,33 +147,27 @@ def preprocess_image_for_comer(pil_image):
 
     h, w = binary.shape
 
-    # To tensor
-    img_tensor = torch.from_numpy(binary).float().unsqueeze(0).unsqueeze(0) / 255.0  # [1,1,H,W]
-    mask_tensor = torch.zeros(1, h, w, dtype=torch.bool)  # no padding
+    img_tensor = torch.from_numpy(binary).float().unsqueeze(0).unsqueeze(0) / 255.0
+    mask_tensor = torch.zeros(1, h, w, dtype=torch.bool)
 
     return img_tensor.to(device), mask_tensor.to(device)
 
 
 def recognize_single_image_comer(model, image, device, max_length=200):
-    """Recognize a single image using CoMER model"""
     if isinstance(image, dict):
         image = image.get("composite")
     if image is None:
         return "Please provide an image.", None, None
     
-    # Debug: print image stats
     print(f"[CoMER] Input image shape: {image.shape}, dtype: {image.dtype}, min: {image.min()}, max: {image.max()}")
     
-    # Convert numpy array to PIL Image
     pil_image = Image.fromarray(image)
     
-    # Preprocess using the correct pipeline from MathSnap-AI
     img_tensor, mask_tensor = preprocess_image_for_comer(pil_image)
     
     print(f"[CoMER] Tensor shape: {img_tensor.shape}, min={img_tensor.min().item():.4f}, max={img_tensor.max().item():.4f}, mean={img_tensor.mean().item():.4f}")
     print(f"[CoMER] Mask shape: {mask_tensor.shape}, sum(padding)={mask_tensor.sum().item()}")
     
-    # Greedy decode with attention
     model.eval()
     with torch.no_grad():
         results, attentions = model.greedy_decode_with_attention(
@@ -208,7 +176,6 @@ def recognize_single_image_comer(model, image, device, max_length=200):
     
     print(f"[CoMER] Raw output indices: {results[0][:20]}...")
     
-    # Convert indices to tokens
     latex_tokens = []
     for idx in results[0]:
         if idx == comer_eos_idx:
@@ -223,14 +190,12 @@ def recognize_single_image_comer(model, image, device, max_length=200):
     
     print(f"[CoMER] Recognized: {latex}")
     
-    # Create attention visualization
     attention_img = create_comer_attention_visualization(image, attentions, latex_tokens)
     
     return latex, rendered_latex, attention_img
 
 
 def create_comer_attention_visualization(orig_image_np, attentions, latex_tokens, max_cols=4):
-    """Create attention visualization for CoMER"""
     if attentions is None or len(attentions) == 0 or len(latex_tokens) == 0:
         return None
     
@@ -249,9 +214,8 @@ def create_comer_attention_visualization(orig_image_np, attentions, latex_tokens
         
         for i in range(num_tokens):
             ax = axes[i]
-            attn = attentions[i].cpu().numpy()  # [h, w]
+            attn = attentions[i].cpu().numpy()
             
-            # Resize attention to match original image
             h_orig, w_orig = orig_image.size[1], orig_image.size[0]
             attn_resized = cv2.resize(attn, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
             
@@ -272,9 +236,7 @@ def create_comer_attention_visualization(orig_image_np, attentions, latex_tokens
         return None
 
 
-# ===== CAN functions =====
 def preprocess_image_for_can(image_np):
-    """Preprocess a numpy image for CAN model"""
     if len(image_np.shape) == 3:
         gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
     else:
@@ -317,7 +279,6 @@ def preprocess_image_for_can(image_np):
 
 
 def recognize_single_image_can(model, image_np, vocab, device, max_length=150, visualize_attention=False):
-    """Recognize a single image using CAN model"""
     processed_img = preprocess_image_for_can(image_np)
 
     transform = A.Compose([
@@ -354,7 +315,6 @@ def recognize_single_image_can(model, image_np, vocab, device, max_length=150, v
 
 
 def visualize_attention_maps_can(orig_image_np, attention_weights, latex_tokens, max_cols=4):
-    """Visualize attention maps for CAN model"""
     try:
         if len(orig_image_np.shape) == 3:
             orig_image = Image.fromarray(orig_image_np)
@@ -407,7 +367,6 @@ def visualize_attention_maps_can(orig_image_np, attention_weights, latex_tokens,
 
 
 def recognize_and_display_can(model, vocab, device, image):
-    """Process image with CAN model"""
     if isinstance(image, dict):
         image = image.get("composite")
     if image is None:
@@ -420,11 +379,8 @@ def recognize_and_display_can(model, vocab, device, image):
     return latex_string, rendered_latex, attention_img
 
 
-# ===== Main processing function =====
 def process_input(model_choice, input_type, uploaded_image, sketchpad_data):
-    """Select model and process image"""
     try:
-        # Get image
         if input_type == "Upload image":
             image_to_process = uploaded_image
         elif input_type == "Use sketchpad":
@@ -432,7 +388,6 @@ def process_input(model_choice, input_type, uploaded_image, sketchpad_data):
         else:
             return "Invalid input type.", None, None
         
-        # Check if image is valid
         if image_to_process is None:
             return "Please draw or upload an image first.", None, None
         if isinstance(image_to_process, dict):
@@ -441,7 +396,6 @@ def process_input(model_choice, input_type, uploaded_image, sketchpad_data):
                 return "Please draw something on the sketchpad first.", None, None
             image_to_process = composite
         
-        # Select model
         if model_choice == "WAP":
             return recognize_and_display_wap(wap_model, wap_vocab, device, image_to_process)
         elif model_choice == "CoMER":
@@ -456,7 +410,6 @@ def process_input(model_choice, input_type, uploaded_image, sketchpad_data):
         return error_msg, None, None
 
 
-# ===== Gradio UI =====
 if __name__ == '__main__':
     with gr.Blocks(title="Offline Handwritten Mathematical Expression Recognition") as demo:
 
@@ -537,7 +490,6 @@ if __name__ == '__main__':
             neutral_hue="gray",
         ),
         css="""
-        /* Hide the "Image" label box on attention map */
         .gr-image .label-wrap,
         .gr-image .container-label {
             display: none !important;

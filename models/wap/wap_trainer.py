@@ -9,7 +9,6 @@ import time
 import wandb
 from datetime import datetime
 
-# Import model and data loader from previous files
 from wap import WAP
 from wap_dataloader import HMERDataset, Vocabulary
 
@@ -51,42 +50,30 @@ def train_epoch(model, train_loader, criterion, optimizer, device, grad_clip=5.0
         captions = captions.to(device)
         caption_lengths = caption_lengths.to(device)
 
-        # forward pass
         predictions, alphas, coverage_seq, decode_lengths, sort_ind = model(
             images, captions, caption_lengths
         )
 
-        # calculate loss
-        targets = captions[sort_ind, 1:]  # remove start token from targets
+        targets = captions[sort_ind, 1:]
 
-        # pack predictions for loss calculation
         predictions = pack_padded_sequence(predictions, decode_lengths, batch_first=True).data
         targets = pack_padded_sequence(targets, decode_lengths, batch_first=True).data
 
         loss = criterion(predictions, targets)
 
-        # add coverage loss
-        # sum over time steps, mean over batch
         coverage_loss = torch.mean(torch.sum(torch.min(alphas, coverage_seq), dim=1))
         loss += lbd * coverage_loss
 
-        # backward pass
         optimizer.zero_grad()
         loss.backward()
 
-        # clip gradients
         if grad_clip:
             nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-        # update weights
         optimizer.step()
 
-        # track loss
         losses.append(loss.item())
 
-        # print progress
-        # if i % print_freq == 0:
-        #     print(f'Batch {i}/{len(train_loader)}, Loss: {loss.item():.4f}')
 
     return sum(losses) / len(losses)
 
@@ -161,21 +148,8 @@ def main():
     for split in splits:
         vocab.build_vocab(f'{dataset_dir}/{split}/caption.txt')
 
-    # train_dataset_1 = HMERDataset(
-    #     data_folder=f'{dataset_dir}/train/img',
-    #     label_file=f'{dataset_dir}/train/caption.txt',
-    #     vocab=vocab,
-    #     transform=train_transforms
-    # )
 
-    # train_dataset_2 = HMERDataset(
-    #     data_folder=f'{dataset_dir}/2014/img',
-    #     label_file=f'{dataset_dir}/2014/caption.txt',
-    #     vocab=vocab,
-    #     transform=train_transforms
-    # )
 
-    # train_dataset = ConcatDataset([train_dataset_1, train_dataset_2])
 
     train_dataset = HMERDataset(
         data_folder=f'{dataset_dir}/train/img',
@@ -212,7 +186,6 @@ def main():
         drop_last=True
     )
 
-    # create model
     model = WAP(
         vocab_size=len(vocab),
         embed_size=embed_size,
@@ -222,17 +195,9 @@ def main():
         dropout=dropout
     ).to(device)
 
-    # loss function and optimizer
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    # learning rate scheduler
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-    #     optimizer,
-    #     mode='min',
-    #     factor=0.5,
-    #     patience=3
-    # )
 
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
@@ -259,7 +224,6 @@ def main():
         'T_mult': T_mult
     })
 
-    # training loop
     best_val_loss = float('inf')
 
     for epoch in range(epochs):
@@ -286,13 +250,11 @@ def main():
             lbd=lbd
         )
 
-        # update learning rate
         scheduler.step()
         t2 = time.time()
 
         print(f'train loss: {train_loss:.4f}, val loss: {val_loss:.4f}, time: {t2 - t1:.4f} seconds')
 
-        # log metrics to wandb
         wandb.log({
             'train_loss': train_loss,
             'val_loss': val_loss,
@@ -300,7 +262,6 @@ def main():
             'epoch': epoch
         })
 
-        # save checkpoint
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             checkpoint = {

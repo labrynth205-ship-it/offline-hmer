@@ -1,7 +1,6 @@
 import os
 import sys
 
-# Add the models/can directory to path so imports work from project root
 _CAN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _CAN_DIR not in sys.path:
     sys.path.insert(0, _CAN_DIR)
@@ -15,13 +14,12 @@ import cv2
 import numpy as np
 from collections import Counter
 
-import json 
+import json
 
-# Try to load config from project root first, then from current directory
 _config_paths = [
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config.json"),  # project root
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json"),  # models/
-    "config.json",  # current dir
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config.json"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json"),
+    "config.json",
 ]
 cfg = None
 for _p in _config_paths:
@@ -36,7 +34,6 @@ if cfg is None:
 CAN_CONFIG = cfg["can"]
 
 
-# Global constants
 INPUT_HEIGHT = CAN_CONFIG["input_height"]
 INPUT_WIDTH = CAN_CONFIG["input_width"]
 BASE_DIR = CAN_CONFIG["base_dir"]
@@ -53,25 +50,19 @@ def is_effectively_binary(img, threshold_percentage=0.9):
 
 
 def before_padding(image):
-    # Apply Canny edge detector to find text edges
     edges = cv2.Canny(image, 50, 150)
 
-    # Apply dilation to connect nearby edges
     kernel = np.ones((7, 13), np.uint8)
     dilated = cv2.dilate(edges, kernel, iterations=8)
 
-    # Find connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
         dilated, connectivity=8
     )
 
-    # Optimize crop rectangle using F1 score
-    # Sort components by number of white pixels (excluding background which is label 0)
     sorted_components = sorted(
         range(1, num_labels), key=lambda i: stats[i, cv2.CC_STAT_AREA], reverse=True
     )
 
-    # Initialize with empty crop
     best_f1 = 0
     best_crop = (0, 0, image.shape[1], image.shape[0])
     total_white_pixels = np.sum(dilated > 0)
@@ -81,11 +72,9 @@ def before_padding(image):
     x_max, y_max = 0, 0
 
     for component_idx in sorted_components:
-        # Add this component to our mask
         component_mask = labels == component_idx
         current_mask = np.logical_or(current_mask, component_mask)
 
-        # Update bounding box
         comp_y, comp_x = np.where(component_mask)
         if len(comp_x) > 0 and len(comp_y) > 0:
             x_min = min(x_min, np.min(comp_x))
@@ -93,7 +82,6 @@ def before_padding(image):
             x_max = max(x_max, np.max(comp_x))
             y_max = max(y_max, np.max(comp_y))
 
-        # Calculate the current crop
         width = x_max - x_min + 1
         height = y_max - y_min + 1
         crop_area = width * height
@@ -102,7 +90,6 @@ def before_padding(image):
         crop_mask[y_min : y_max + 1, x_min : x_max + 1] = 1
         white_in_crop = np.sum(np.logical_and(dilated > 0, crop_mask > 0))
 
-        # Calculate F1 score
         precision = white_in_crop / crop_area
         recall = white_in_crop / total_white_pixels
         f1 = 2 * precision * recall / (precision + recall)
@@ -111,11 +98,9 @@ def before_padding(image):
             best_f1 = f1
             best_crop = (x_min, y_min, x_max, y_max)
 
-    # Apply the best crop to the original image
     x_min, y_min, x_max, y_max = best_crop
     cropped_image = image[y_min : y_max + 1, x_min : x_max + 1]
 
-    # Apply Gaussian adaptive thresholding
     if is_effectively_binary(cropped_image):
         _, thresh = cv2.threshold(cropped_image, 127, 255, cv2.THRESH_BINARY)
     else:
@@ -123,18 +108,15 @@ def before_padding(image):
             cropped_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
         )
 
-    # Ensure background is black
     white = np.sum(thresh == 255)
     black = np.sum(thresh == 0)
     if white > black:
         thresh = 255 - thresh
 
-    # Clean up noise using median filter
     denoised = cv2.medianBlur(thresh, 3)
     for _ in range(3):
         denoised = cv2.medianBlur(denoised, 3)
 
-    # Add padding
     result = cv2.copyMakeBorder(denoised, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=0)
 
     return result, best_crop
@@ -169,12 +151,11 @@ def process_img(filename, convert_to_rgb=False):
         )
         padded_img = (
             np.ones((INPUT_HEIGHT, INPUT_WIDTH), dtype=np.uint8) * 0
-        )  # Black background
+        )
         x_offset = (INPUT_WIDTH - new_w) // 2
         padded_img[:, x_offset : x_offset + new_w] = resized_img
         resized_img = padded_img
 
-    # Convert to BGR/RGB only if necessary
     if convert_to_rgb:
         resized_img = cv2.cvtColor(resized_img, cv2.COLOR_GRAY2BGR)
 
@@ -200,16 +181,12 @@ class HMERDatasetForCAN(Dataset):
         self.max_length = max_length
         self.vocab = vocab
 
-        # Read the label file
         df = pd.read_csv(label_file, sep="\t", header=None, names=["filename", "label"])
 
-        # Check image file format
         if os.path.exists(data_folder):
             img_files = os.listdir(data_folder)
             if img_files:
-                # Get the extension of the first file
                 extension = os.path.splitext(img_files[0])[1]
-                # Add extension to filenames if not present
                 df["filename"] = df["filename"].apply(
                     lambda x: x if os.path.splitext(x)[1] else x + extension
                 )
@@ -217,13 +194,12 @@ class HMERDatasetForCAN(Dataset):
         self.annotations = dict(zip(df["filename"], df["label"]))
         self.image_paths = list(self.annotations.keys())
 
-        # Default transformation
         if transform is None:
             transform = A.Compose(
                 [
                     A.Normalize(
                         mean=[0.0], std=[1.0]
-                    ),  # Normalize for single channel (grayscale)   
+                    ),
                     A.pytorch.ToTensorV2(),
                 ]
             )
@@ -233,47 +209,35 @@ class HMERDatasetForCAN(Dataset):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        # Get image path and LaTeX expression
         image_path = self.image_paths[idx]
         latex = self.annotations[image_path]
 
-        # Process image
         file_path = os.path.join(self.data_folder, image_path)
         processed_img, _ = process_img(
             file_path, convert_to_rgb=False
-        )  # Keep image as grayscale
+        )
 
-        # Convert to [C, H, W] format and normalize
         if self.transform:
-            # Ensure image has the correct format for albumentations
-            processed_img = np.expand_dims(processed_img, axis=-1)  # [H, W, 1]
+            processed_img = np.expand_dims(processed_img, axis=-1)
             image = self.transform(image=processed_img)["image"]
         else:
-            # If no transform, manually convert to tensor
             image = torch.from_numpy(processed_img).float() / 255.0
-            image = image.unsqueeze(0)  # Add grayscale channel: [1, H, W]
+            image = image.unsqueeze(0)
 
-        # Tokenize LaTeX expression
         tokens = self.vocab.tokenize(latex)
 
-        # Add start and end tokens
         tokens = [self.vocab.start_token] + tokens + [self.vocab.end_token]
 
-        # Truncate if exceeding max length
         if len(tokens) > self.max_length:
             tokens = tokens[: self.max_length]
 
-        # Create counting vector for CAN
         count_vector = self.create_count_vector(tokens)
 
-        # Store actual caption length
         caption_length = torch.LongTensor([len(tokens)])
 
-        # Pad to max length
         if len(tokens) < self.max_length:
             tokens = tokens + [self.vocab.pad_token] * (self.max_length - len(tokens))
 
-        # Convert to tensor
         caption = torch.LongTensor(tokens)
 
         return image, caption, caption_length, count_vector
@@ -288,13 +252,10 @@ class HMERDatasetForCAN(Dataset):
         Returns:
             Tensor counting the occurrence of each symbol
         """
-        # Count occurrences of each token
         counter = Counter(tokens)
 
-        # Create counting vector with size equal to vocabulary size
         count_vector = torch.zeros(len(self.vocab))
 
-        # Fill counting vector with counts
         for token_id, count in counter.items():
             if 0 <= token_id < len(count_vector):
                 count_vector[token_id] = count
@@ -312,11 +273,10 @@ class Vocabulary:
         self.idx2word = {}
         self.idx = 0
 
-        # Add special tokens
-        self.add_word("<pad>")  # Padding token
-        self.add_word("<start>")  # Start token
-        self.add_word("<end>")  # End token
-        self.add_word("<unk>")  # Unknown token
+        self.add_word("<pad>")
+        self.add_word("<start>")
+        self.add_word("<end>")
+        self.add_word("<unk>")
 
         self.pad_token = self.word2idx["<pad>"]
         self.start_token = self.word2idx["<start>"]
@@ -377,7 +337,6 @@ class Vocabulary:
         self.idx2word = data["idx2word"]
         self.idx = data["idx"]
 
-        # Update special tokens
         self.pad_token = self.word2idx["<pad>"]
         self.start_token = self.word2idx["<start>"]
         self.end_token = self.word2idx["<end>"]
@@ -395,7 +354,6 @@ def build_unified_vocabulary(base_dir="data/CROHME"):
         Constructed Vocabulary object
     """
     vocab = Vocabulary()
-    # Get all subdirectories
     subdirs = [
         d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))
     ]
@@ -422,28 +380,23 @@ def create_dataloaders_for_can(base_dir="data/CROHME", batch_size=32, num_worker
     Returns:
         train_loader, val_loader, test_loader, vocab
     """
-    # Build unified vocabulary
     vocab = build_unified_vocabulary(base_dir)
 
-    # Save vocabulary for later use
     os.makedirs("models", exist_ok=True)
     vocab.save_vocab("hmer_vocab.pth")
 
-    # Create transform for grayscale data
     transform = A.Compose(
         [
             A.Normalize(
                 mean=[0.0], std=[1.0]
-            ),  # Normalize for single channel (grayscale)   
+            ),
             A.pytorch.ToTensorV2(),
         ]
     )
 
-    # Create datasets
     train_datasets = []
 
-    # Use 'train' and possibly add other datasets to training set
-    train_dirs = ["train", "2014"]  # Add other directories if desired
+    train_dirs = ["train", "2014"]
     for train_dir in train_dirs:
         data_folder = os.path.join(base_dir, train_dir, "img")
         label_file = os.path.join(base_dir, train_dir, "caption.txt")
@@ -458,13 +411,11 @@ def create_dataloaders_for_can(base_dir="data/CROHME", batch_size=32, num_worker
                 )
             )
 
-    # Combine training datasets
     if train_datasets:
         train_dataset = ConcatDataset(train_datasets)
     else:
         raise ValueError("No training datasets found")
 
-    # Validation dataset - use 2016 as validation
     val_data_folder = os.path.join(base_dir, "2016", "img")
     val_label_file = os.path.join(base_dir, "2016", "caption.txt")
 
@@ -475,7 +426,6 @@ def create_dataloaders_for_can(base_dir="data/CROHME", batch_size=32, num_worker
         transform=transform,
     )
 
-    # Test dataset - use 2019 as test
     test_data_folder = os.path.join(base_dir, "2019", "img")
     test_label_file = os.path.join(base_dir, "2019", "caption.txt")
 
@@ -486,7 +436,6 @@ def create_dataloaders_for_can(base_dir="data/CROHME", batch_size=32, num_worker
         transform=transform,
     )
 
-    # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -514,19 +463,15 @@ def create_dataloaders_for_can(base_dir="data/CROHME", batch_size=32, num_worker
     return train_loader, val_loader, test_loader, vocab
 
 
-# Use functionality integrated with the CAN model
 def main():
-    # Create dataloader for the CAN model
     train_loader, val_loader, test_loader, vocab = create_dataloaders_for_can(
         base_dir=BASE_DIR, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS
     )
 
-    # Print information
-    print(f"Training samples: {len(train_loader.dataset)}")  
-    print(f"Validation samples: {len(val_loader.dataset)}")  
-    print(f"Test samples: {len(test_loader.dataset)}")  
+    print(f"Training samples: {len(train_loader.dataset)}")
+    print(f"Validation samples: {len(val_loader.dataset)}")
+    print(f"Test samples: {len(test_loader.dataset)}")
 
-    # Check dataloader output
     for images, captions, lengths, count_vectors in train_loader:
         print(f"Image batch shape: {images.shape}")
         print(f"Caption batch shape: {captions.shape}")

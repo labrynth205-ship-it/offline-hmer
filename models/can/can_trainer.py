@@ -1,7 +1,6 @@
 import os
 import sys
 
-# Add the models/can directory to path so imports work from project root
 _CAN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _CAN_DIR not in sys.path:
     sys.path.insert(0, _CAN_DIR)
@@ -22,7 +21,7 @@ import albumentations as A
 import cv2
 import random
 
-import json 
+import json
 
 ROOT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../..")
@@ -34,7 +33,6 @@ with open(os.path.join(ROOT_DIR, "config.json"), "r") as json_file:
 CAN_CONFIG = cfg["can"]
 
 
-# Global constants
 BASE_DIR = CAN_CONFIG["base_dir"]
 SEED = CAN_CONFIG["seed"]
 CHECKPOINT_DIR = CAN_CONFIG["checkpoint_dir"]
@@ -75,7 +73,6 @@ class RandomMorphology(A.ImageOnlyTransform):
             return cv2.dilate(img, kernel, iterations=1)
 
 
-# Custom transforms for CAN model (grayscale images)
 train_transforms = A.Compose([
     A.Rotate(limit=5, p=0.25, border_mode=cv2.BORDER_REPLICATE),
     A.ElasticTransform(alpha=100,
@@ -83,7 +80,7 @@ train_transforms = A.Compose([
                        p=0.5,
                        interpolation=cv2.INTER_CUBIC),
     RandomMorphology(p=0.5, kernel_size=2),
-    A.Normalize(mean=[0.0], std=[1.0]),  # For grayscale      
+    A.Normalize(mean=[0.0], std=[1.0]),
     A.pytorch.ToTensorV2()
 ])
 
@@ -112,12 +109,10 @@ def train_epoch(model,
         captions = captions.to(device)
         count_targets = count_targets.to(device)
 
-        # Forward pass
         outputs, count_vectors = model(images,
                                        captions,
                                        teacher_forcing_ratio=0.5)
 
-        # Calculate loss
         loss, cls_loss, counting_loss = model.calculate_loss(
             outputs=outputs,
             targets=captions,
@@ -125,23 +120,18 @@ def train_epoch(model,
             count_targets=count_targets,
             lambda_count=lambda_count)
 
-        # Backward pass
         optimizer.zero_grad()
         loss.backward()
 
-        # Clip gradients
         if grad_clip:
             nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-        # Update weights
         optimizer.step()
 
-        # Track losses
         total_loss += loss.item()
         total_cls_loss += cls_loss.item()
         total_count_loss += counting_loss.item()
 
-        # Print progress
         if i % print_freq == 0 and i > 0:
             print(
                 f'Batch {i}/{len(train_loader)}, Loss: {loss.item():.4f}, '
@@ -170,12 +160,10 @@ def validate(model, val_loader, device, lambda_count=0.01):
             captions = captions.to(device)
             count_targets = count_targets.to(device)
 
-            # Forward pass
             outputs, count_vectors = model(
                 images, captions,
-                teacher_forcing_ratio=0.0)  # No teacher forcing in validation
+                teacher_forcing_ratio=0.0)
 
-            # Calculate loss
             loss, cls_loss, counting_loss = model.calculate_loss(
                 outputs=outputs,
                 targets=captions,
@@ -183,7 +171,6 @@ def validate(model, val_loader, device, lambda_count=0.01):
                 count_targets=count_targets,
                 lambda_count=lambda_count)
 
-            # Track losses
             total_loss += loss.item()
             total_cls_loss += cls_loss.item()
             total_count_loss += counting_loss.item()
@@ -192,43 +179,35 @@ def validate(model, val_loader, device, lambda_count=0.01):
 
 
 def main():
-    # Configuration
     dataset_dir = BASE_DIR
     seed = SEED
     checkpoints_dir = CHECKPOINT_DIR
     checkpoint_name = CHECKPOINT_NAME
     batch_size = BATCH_SIZE
 
-    # Model parameters
     hidden_size = HIDDEN_SIZE
     embedding_dim = EMBEDDING_DIM
     use_coverage = USE_COVERAGE
     lambda_count = LAMBDA_COUNT
 
-    # Training parameters
     lr = LR
     epochs = EPOCHS
     grad_clip = GRAD_CLIP
     print_freq = PRINT_FREQ
 
-    # Scheduler parameters
     T_0 = T
     T_mult = T_MULT
 
-    # Set random seeds
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
 
-    # Create checkpoint directory
     os.makedirs(checkpoints_dir, exist_ok=True)
 
-    # Set device
     device = DEVICE
     print(f'Using device: {device}')
 
-    # Create dataloaders
     train_loader, val_loader, test_loader, vocab = create_dataloaders_for_can(
         base_dir=dataset_dir, batch_size=batch_size, num_workers=NUM_WORKERS)
 
@@ -237,7 +216,6 @@ def main():
     print(f"Test samples: {len(test_loader.dataset)}")
     print(f"Vocabulary size: {len(vocab)}")
 
-    # Create model
     model = create_can_model(num_classes=len(vocab),
                              hidden_size=hidden_size,
                              embedding_dim=embedding_dim,
@@ -245,15 +223,12 @@ def main():
                              pretrained_backbone=PRETRAINED_BACKBONE,
                              backbone_type=BACKBONE_TYPE).to(device)
 
-    # Create optimizer
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    # Create learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,
                                                                T_0=T_0,
                                                                T_mult=T_mult)
 
-    # Training loop
     best_val_loss = float('inf')
 
     for epoch in tqdm(range(epochs)):
@@ -261,7 +236,6 @@ def main():
         print(f'Epoch {epoch+1:03}/{epochs:03}')
         t1 = time.time()
 
-        # Train
         train_loss, train_cls_loss, train_count_loss = train_epoch(
             model=model,
             train_loader=train_loader,
@@ -271,18 +245,15 @@ def main():
             lambda_count=lambda_count,
             print_freq=print_freq)
 
-        # Validate
         val_loss, val_cls_loss, val_count_loss = validate(
             model=model,
             val_loader=val_loader,
             device=device,
             lambda_count=lambda_count)
 
-        # Update learning rate
         scheduler.step()
         t2 = time.time()
 
-        # Print stats
         print(
             f'Train - Total Loss: {train_loss:.4f}, Class Loss: {train_cls_loss:.4f}, Count Loss: {train_count_loss:.4f}'
         )
@@ -291,7 +262,6 @@ def main():
         )
         print(f'Time: {t2 - t1:.2f}s, Learning Rate: {curr_lr:.6f}')
 
-        # Save checkpoint
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             checkpoint = {

@@ -61,7 +61,7 @@ class CoMER(nn.Module):
         -------
         FloatTensor [b, l, vocab_size]
         """
-        feature, mask = self.encoder(img, img_mask)  # [b, h, w, d]
+        feature, mask = self.encoder(img, img_mask)
         out = self.decoder(feature, mask, tgt)
         return out
 
@@ -100,8 +100,8 @@ class CoMER(nn.Module):
         finished = torch.zeros(b, dtype=torch.bool, device=img.device)
 
         for _ in range(max_len):
-            out = self.decoder(feature, mask, input_ids)  # [b, l, vocab]
-            next_token = out[:, -1, :].argmax(dim=-1)  # [b]
+            out = self.decoder(feature, mask, input_ids)
+            next_token = out[:, -1, :].argmax(dim=-1)
 
             finished = finished | (next_token == eos_idx)
             next_token[finished] = eos_idx
@@ -152,11 +152,10 @@ class CoMER(nn.Module):
 
         for _ in range(max_len):
             out, attn = self.decoder(feature, mask, input_ids, return_attn=True)
-            # attn: [b, tgt_len, h, w] - take last step's attention
-            last_attn = attn[:, -1, :, :]  # [b, h, w]
+            last_attn = attn[:, -1, :, :]
             all_attentions.append(last_attn.cpu())
 
-            next_token = out[:, -1, :].argmax(dim=-1)  # [b]
+            next_token = out[:, -1, :].argmax(dim=-1)
 
             finished = finished | (next_token == eos_idx)
             next_token[finished] = eos_idx
@@ -168,7 +167,6 @@ class CoMER(nn.Module):
             if finished.all():
                 break
 
-        # Stack attentions: [tgt_len, b, h, w]
         all_attentions = torch.stack(all_attentions, dim=0)
 
         results = []
@@ -178,7 +176,7 @@ class CoMER(nn.Module):
                 seq = seq[:seq.index(eos_idx)]
             results.append(seq)
 
-        return results, all_attentions[:, 0, :, :]  # [tgt_len, h, w] for batch 0
+        return results, all_attentions[:, 0, :, :]
 
     @torch.no_grad()
     def beam_search_decode(
@@ -201,73 +199,61 @@ class CoMER(nn.Module):
         self.eval()
         b = img.size(0)
         device = img.device
-        feature, mask = self.encoder(img, img_mask)  # [b, h, w, d]
+        feature, mask = self.encoder(img, img_mask)
 
         results = []
         for i in range(b):
-            feat_i = feature[i:i+1]  # [1, h, w, d]
-            mask_i = mask[i:i+1]     # [1, h, w]
+            feat_i = feature[i:i+1]
+            mask_i = mask[i:i+1]
 
-            # Expand for beams: [beam, h, w, d]
             feat_beam = feat_i.expand(beam_size, -1, -1, -1)
             mask_beam = mask_i.expand(beam_size, -1, -1)
 
-            # Each beam starts with SOS
             sequences = torch.full((beam_size, 1), sos_idx, dtype=torch.long, device=device)
             scores = torch.zeros(beam_size, device=device)
-            scores[1:] = -1e9  # only first beam active initially
+            scores[1:] = -1e9
 
-            # Store completed hypotheses: (score, sequence)
             completed = []
 
             for step in range(max_len):
-                out = self.decoder(feat_beam, mask_beam, sequences)  # [beam, l, vocab]
-                logits = out[:, -1, :]  # [beam, vocab]
+                out = self.decoder(feat_beam, mask_beam, sequences)
+                logits = out[:, -1, :]
                 log_probs = F.log_softmax(logits, dim=-1)
 
-                # Candidate scores: [beam, vocab]
                 candidate_scores = scores.unsqueeze(-1) + log_probs
                 vocab_size = log_probs.size(-1)
 
                 if step == 0:
-                    # Only first beam is active
                     candidate_scores = candidate_scores[0:1].reshape(-1)
                 else:
                     candidate_scores = candidate_scores.reshape(-1)
 
-                # Top-k candidates
                 topk_scores, topk_ids = candidate_scores.topk(beam_size, dim=-1)
                 beam_ids = topk_ids // vocab_size
                 token_ids = topk_ids % vocab_size
 
-                # Build new sequences
                 new_sequences = torch.cat([
                     sequences[beam_ids], token_ids.unsqueeze(-1)
                 ], dim=-1)
                 new_scores = topk_scores
 
-                # Check for completed beams (EOS generated)
                 active_mask = token_ids != eos_idx
                 for j in range(beam_size):
                     if not active_mask[j]:
-                        seq = new_sequences[j, 1:].tolist()  # remove SOS
+                        seq = new_sequences[j, 1:].tolist()
                         if eos_idx in seq:
                             seq = seq[:seq.index(eos_idx)]
-                        # Length-normalized score
                         length_penalty = ((5.0 + len(seq)) / 6.0) ** alpha
                         normalized_score = new_scores[j].item() / length_penalty
                         completed.append((normalized_score, seq))
 
-                # Keep only active beams
                 active_indices = active_mask.nonzero(as_tuple=True)[0]
                 if len(active_indices) == 0:
                     break
                 if len(completed) >= beam_size:
                     break
 
-                # Pad back to beam_size if needed
                 if len(active_indices) < beam_size:
-                    # Fill remaining slots with top active beams
                     pad_count = beam_size - len(active_indices)
                     pad_indices = active_indices[:pad_count].repeat(
                         (pad_count + len(active_indices) - 1) // len(active_indices) + 1
@@ -281,14 +267,12 @@ class CoMER(nn.Module):
                     sequences = new_sequences[active_indices[:beam_size]]
                     scores = new_scores[active_indices[:beam_size]]
 
-            # If no completed, use best active beam
             if not completed:
                 seq = sequences[0, 1:].tolist()
                 if eos_idx in seq:
                     seq = seq[:seq.index(eos_idx)]
                 completed.append((scores[0].item(), seq))
 
-            # Pick best hypothesis
             completed.sort(key=lambda x: x[0], reverse=True)
             results.append(completed[0][1])
 
